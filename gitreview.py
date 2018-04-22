@@ -2,15 +2,15 @@
 
 import subprocess
 import re
+import argparse
+import sys
+import shutil
+import os
 from collections import Counter
 
-DIRECTORY = "bridge/"
-PATH = "*.py **/*.py"
-ITERATIONS = 100
 
-
-def run_pylint():
-    pylint_proc = subprocess.run("pylint -j4 {} --rcfile=../pylint.rc".format(PATH), cwd=DIRECTORY, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+def run_pylint(target, cwd):
+    pylint_proc = subprocess.run("pylint -j4 {} --rcfile=pylint.rc".format(target), cwd=cwd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     output = [line for line in pylint_proc.stdout.split('\n') if line.strip()]
     return output
 
@@ -43,7 +43,7 @@ def match_pylint_errors(before, after):
         if name not in before_errors:
             diff = after_errors[name]
         else:
-            diff = after_errors[name] - before_errors[name]  # or max(0, ???)
+            diff = after_errors[name] - before_errors[name]
 
         if diff != 0:
             diff_errors[name] = diff
@@ -51,8 +51,8 @@ def match_pylint_errors(before, after):
     return diff_errors
 
 
-def check_stats():
-    stats_proc = subprocess.run("git diff HEAD HEAD~1 --stat", cwd=DIRECTORY, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+def check_stats(cwd):
+    stats_proc = subprocess.run("git diff HEAD HEAD~1 --stat", cwd=cwd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     output = [line.strip() for line in stats_proc.stdout.split('\n') if line.strip()]
 
     total = 0
@@ -79,6 +79,7 @@ def assemble_errors(errors):
 
 
 def output_stats(stats):
+    print("\n>>> Combined stats:")
     for author in stats:
         results = stats[author]
         score = sum([d for (d, _, _) in results])
@@ -93,34 +94,34 @@ def output_stats(stats):
         print("Errors: ", errors)
 
 
-def main():
+def review(options):
     stats = {}
     diff_errors = {}
-    after_output = run_pylint()
+    after_output = run_pylint(options.target, options.cwd)
     before_output = after_output
     after_score = get_pylint_score(after_output)
     before_score = after_score
 
-    for i in range(ITERATIONS):
+    for i in range(options.iterations):
         print("\n=== Iteration {} ===".format(i))
 
         # get author
-        author_proc = subprocess.run("git log -1 --pretty=format:'%an'", cwd=DIRECTORY, shell=True, check=True, stdout=subprocess.PIPE, universal_newlines=True)
+        author_proc = subprocess.run("git log -1 --pretty=format:'%an'", cwd=options.cwd, shell=True, check=True, stdout=subprocess.PIPE, universal_newlines=True)
         author = str(author_proc.stdout)
 
         # get commit hash
-        hash_proc = subprocess.run("git rev-parse HEAD", cwd=DIRECTORY, shell=True, check=True, stdout=subprocess.PIPE, universal_newlines=True)
+        hash_proc = subprocess.run("git rev-parse HEAD", cwd=options.cwd, shell=True, check=True, stdout=subprocess.PIPE, universal_newlines=True)
         commit = str(hash_proc.stdout)
 
         # get stats
-        lines_changed = check_stats()
+        lines_changed = check_stats(options.cwd)
 
         # revert latest commit
-        subprocess.run("git reset --hard HEAD~1", cwd=DIRECTORY, shell=True, check=True, stdout=subprocess.PIPE)
+        subprocess.run("git reset --hard HEAD~1", cwd=options.cwd, shell=True, check=True, stdout=subprocess.PIPE)
 
         # update the score if python scripts changed
         if lines_changed > 0:
-            before_output = run_pylint()
+            before_output = run_pylint(options.target, options.cwd)
             before_score = get_pylint_score(before_output)
             diff_errors = match_pylint_errors(before_output, after_output)
 
@@ -143,11 +144,34 @@ def main():
             stats[author].append(new_data)
         else:
             stats[author] = [new_data]
-
         print(stats)
 
-    print('\n')
     output_stats(stats)
+
+
+def main():
+    arg_parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    arg_parser.epilog = "Git review."
+    format_group = arg_parser.add_argument_group("Options")
+    format_group.add_argument(
+        "--cwd",
+        default=".",
+        help="Directory to execute in")
+    format_group.add_argument(
+        "--iterations",
+        default='100',
+        action='store',
+        help="Iterations to perform")
+    format_group.add_argument(
+        "target",
+        default=["*.py", "**/*.py"],
+        nargs="*")
+
+    options = arg_parser.parse_args(sys.argv[1:])
+    options.target = ' '.join(options.target)
+    options.iterations = int(options.iterations)
+    shutil.copyfile('pylint.rc', os.path.join(options.cwd, 'pylint.rc'))
+    review(options)
 
 
 if __name__ == "__main__":
