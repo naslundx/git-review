@@ -19,7 +19,7 @@ class Analysis_Pylint:
         self.cwd = cwd
         self.target = target
         shutil.copyfile('pylint.rc', os.path.join(cwd, 'pylint.rc'))
-    
+
     def run(self):
         output = run_process("pylint -j4 {} --rcfile=pylint.rc".format(self.target), self.cwd, False)
         output = [line for line in output.split('\n') if line.strip()]
@@ -32,20 +32,63 @@ class Analysis_Pylint:
             score = float(match.groups()[0])
         return score
 
-    def match_errors(self, before, after):
-        before_errors = []
-        after_errors = []
-        for line in before:
-            py_match = re.match(r'.*\((.+)\)$', line.strip())
-            if py_match and "previous run" not in line:
-                before_errors.append(py_match.groups()[0])
-        for line in after:
-            py_match = re.match(r'.*\((.+)\)$', line.strip())
-            if py_match and "previous run" not in line:
-                after_errors.append(py_match.groups()[0])
+    def _get_errors(self, output):
+        result = []
+        for line in output:
+            match = re.match(r'.*\((.+)\)$', line.strip())
+            if match and "previous run" not in line:
+                result.append(match.groups()[0])
+        return result
 
-        before_errors = Counter(before_errors)
-        after_errors = Counter(after_errors)
+    def match_errors(self, before, after):
+        before_errors = Counter(self._get_errors(before))
+        after_errors = Counter(self._get_errors(after))
+
+        diff_errors = {}
+        for name in after_errors:
+            if name not in before_errors:
+                diff = after_errors[name]
+            else:
+                diff = after_errors[name] - before_errors[name]
+
+            if diff != 0:
+                diff_errors[name] = diff
+
+        for name in before_errors:
+            if name not in diff_errors and name not in after_errors:
+                diff_errors[name] = -before_errors[name]
+
+        return diff_errors
+
+    def relevant_line(self, line):
+        return re.match(r'.*\.py\s', line)
+
+
+class Analysis_Cppcheck:
+    def __init__(self, cwd, target):
+        self.cwd = cwd
+        self.target = target
+
+    def run(self):
+        output = run_process("cppcheck {} --enable=all --inline-suppr".format(self.target), self.cwd, False)
+        print(output)
+        output = [line for line in output.split('\n') if line.strip()]
+        return output
+
+    def get_score(self, output):
+        return 10.0 - len(output) / 10.0
+
+    def _get_errors(self, output):
+        result = []
+        for line in output:
+            match = re.match(r'.*\d\]: \((.+)\) ', line.strip())
+            if match:
+                result.append(match.groups()[0])
+        return result
+
+    def match_errors(self, before, after):
+        before_errors = Counter(self._get_errors(before))
+        after_errors = Counter(self._get_errors(after))
 
         diff_errors = {}
         for name in after_errors:
@@ -60,30 +103,7 @@ class Analysis_Pylint:
         return diff_errors
 
     def relevant_line(self, line):
-        return re.match(r'.*\.py\s', line)
-
-
-class Analysis_Cppcheck:
-    def __init__(self, cwd, target):
-        self.cwd = cwd
-        self.target = target
-    
-    def run(self):
-        output = run_process("cppcheck {}".format(self.target), self.cwd, False)
-        output = [line for line in output.split('\n') if line.strip()]
-        return output
-
-    def get_score(self, output):
-        # TODO
-        return 0.0
-
-    def match_errors(self, before, after):
-        # TODO
-        return {}
-
-    def relevant_line(self, line):
-        # TODO
-        return re.match(r'.*\.cpp\s', line)
+        return re.match(r'.*\.cpp\s', line) or re.match(r'.*\.hpp\s', line)
 
 
 def check_stats(diff, tool):
@@ -178,7 +198,7 @@ def review(options):
         print(author, lines_changed, "{0:.2f}".format(before_score), commit)
 
         # Keep going if nothing new happened or no lines changed
-        if abs(diff) < 0.005 or lines_changed == 0:
+        if lines_changed <= 0:
             continue
 
         # Update stats
@@ -190,6 +210,7 @@ def review(options):
         print(stats)
 
     output_stats(stats)
+    return 0
 
 
 def main():
@@ -202,7 +223,7 @@ def main():
         help="Directory to execute in")
     format_group.add_argument(
         "--iterations",
-        default='100',
+        default='10',
         action='store',
         help="Iterations to perform")
     format_group.add_argument(
