@@ -12,6 +12,7 @@ from collections import Counter
 # run(): Run the analysis, return the output
 # get_score(output): Extract the score as float
 # match_errors(before, after): Find difference in errors, return map name:occurences
+# relevant_line(line): return True if relevant file type is on this line (.*\.py\s for pylint)
 
 class Analysis_Pylint:
     def __init__(self, cwd, target):
@@ -20,8 +21,8 @@ class Analysis_Pylint:
         shutil.copyfile('pylint.rc', os.path.join(cwd, 'pylint.rc'))
     
     def run(self):
-        pylint_proc = subprocess.run("pylint -j4 {} --rcfile=pylint.rc".format(self.target), cwd=self.cwd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        output = [line for line in pylint_proc.stdout.split('\n') if line.strip()]
+        output = run_process("pylint -j4 {} --rcfile=pylint.rc".format(self.target), self.cwd, False)
+        output = [line for line in output.split('\n') if line.strip()]
         return output
 
     def get_score(self, output):
@@ -58,25 +59,47 @@ class Analysis_Pylint:
 
         return diff_errors
 
-
-def run_process(command, cwd):
-    proc = subprocess.run(command, cwd=cwd, shell=True, check=True, stdout=subprocess.PIPE, universal_newlines=True)
-    return str(proc.stdout)
+    def relevant_line(self, line):
+        return re.match(r'.*\.py\s', line)
 
 
-def check_stats(cwd):
-    output = run_process("git diff HEAD HEAD~1 --stat", cwd)
-    output = [line.strip() for line in output.split('\n') if line.strip()]
+class Analysis_Cppcheck:
+    def __init__(self, cwd, target):
+        self.cwd = cwd
+        self.target = target
+    
+    def run(self):
+        output = run_process("cppcheck {}".format(self.target), self.cwd, False)
+        output = [line for line in output.split('\n') if line.strip()]
+        return output
 
+    def get_score(self, output):
+        # TODO
+        return 0.0
+
+    def match_errors(self, before, after):
+        # TODO
+        return {}
+
+    def relevant_line(self, line):
+        # TODO
+        return re.match(r'.*\.cpp\s', line)
+
+
+def check_stats(diff, tool):
     total = 0
-    for line in output:
-        py_match = re.match(r'.*\.py\s', line)
-        if py_match:
+    for line in diff:
+        if tool.relevant_line(line):
             chg_match = re.match(r'.*\s\|\s(\d+)\s', line)
             if chg_match:
                 total += int(chg_match.groups()[0])
 
     return total
+
+
+def run_process(command, cwd, check=True):
+    proc = subprocess.run(command, cwd=cwd, shell=True, check=check, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    return str(proc.stdout)
 
 
 def assemble_errors(errors):
@@ -113,6 +136,8 @@ def review(options):
 
     if options.tool == 'pylint':
         tool = Analysis_Pylint(options.cwd, options.target)
+    elif options.tool == 'cppcheck':
+        tool = Analysis_Cppcheck(options.cwd, options.target)
     else:
         print('Unrecognized tool: {}'.format(options.tool))
         return 1
@@ -130,7 +155,9 @@ def review(options):
         commit = run_process("git rev-parse HEAD", options.cwd)
 
         # get stats
-        lines_changed = check_stats(options.cwd)
+        diff = run_process("git diff HEAD HEAD~1 --stat", options.cwd)
+        diff = [line.strip() for line in diff.split('\n') if line.strip()]
+        lines_changed = check_stats(diff, tool)
 
         # revert latest commit
         run_process("git reset --hard HEAD~1", options.cwd)
@@ -186,12 +213,19 @@ def main():
     )
     format_group.add_argument(
         "target",
-        default=["*.py", "**/*.py"],
+        default=[],
         nargs="*")
 
     options = arg_parser.parse_args(sys.argv[1:])
-    options.target = ' '.join(options.target)
     options.iterations = int(options.iterations)
+
+    if not options.target:
+        if options.tool == 'pylint':
+            options.target = ['*.py', '**/*.py']
+        elif options.tool == 'cppcheck':
+            options.target = ['*.cpp', '*.hpp']
+
+    options.target = ' '.join(options.target)
     return review(options)
 
 
